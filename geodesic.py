@@ -14,10 +14,24 @@ import bpy
 
 from mathutils import Matrix, Vector
 
+# import sys
+# os.system(f'{sys.executable} -m ensurepip')
+# os.system(f'{sys.executable} -m pip install networkx')
+
 logger = logging.getLogger('geodesic')
 
 TOL = 1e-4
 VERT_TOL = 1e-2
+
+def const(n):
+    return n
+
+def rotated(v, rot):
+    v.rotate(rot)
+    return v
+
+def uniform_n(low, hi, n):
+    return [random.uniform(low, hi) for _ in range(n)]
 
 def rotate_about_axis(axis, theta):
     """
@@ -100,7 +114,7 @@ def remove_path(G, nodes):
 
 #     return G, verts
 
-def make_empty_curve(name='Curve', type='BEZIER', handle_type='AUTO'):
+def make_empty_curve(name='Curve'):
     curve = bpy.data.objects.new(name, bpy.data.curves.new(name, 'CURVE'))
     bpy.context.collection.objects.link(curve)
     curve.data.dimensions = '3D'
@@ -126,7 +140,7 @@ def make_spline(curve, points, name='Spline', type='BEZIER', handle_type='AUTO')
     return spline
 
 def make_curve(points, name='Curve', type='BEZIER', handle_type='AUTO'):
-    curve = make_empty_curve(name=name, type=type, handle_type=handle_type)
+    curve = make_empty_curve(name=name)
     make_spline(curve, points, type=type, handle_type=handle_type)
 
     return curve
@@ -373,7 +387,7 @@ def walk_along_mesh(obj, mesh, start, heading):
 
         new_face = next_face(face, edge)
         if new_face is None:
-            logger.debug('NEWFACE IS NONE')
+            # logger.debug('NEWFACE IS NONE')
             faces.append(face.index)
             assert len(points) - 1 == len(faces)
             return points, faces
@@ -386,10 +400,9 @@ def walk_along_mesh(obj, mesh, start, heading):
         faces.append(face.index)
         face = new_face
 
+    assert len(points) - 1 == len(faces)
+    return points, faces
     assert False
-
-def const(n):
-    return n
 
 def generate_walks(curve, obj, mesh, starts, gen_n_spokes, gen_angles, gen_lengths):
     mesh.faces.ensure_lookup_table()
@@ -401,7 +414,8 @@ def generate_walks(curve, obj, mesh, starts, gen_n_spokes, gen_angles, gen_lengt
 
         if isinstance(start, tuple):
             start, heading = start
-            heading = heading.normalized() * length
+            heading.normalize()
+            loc, normal, face_index = closest_point_on_mesh(obj, start)
         else:
             loc, normal, face_index = closest_point_on_mesh(obj, start)
             # choose arb heading
@@ -487,7 +501,7 @@ def dev():
     obj = D.objects['Cube.002']
     m = bmesh.new()
     m.from_mesh(obj.data)
-    curve = make_empty_curve(handle_type='VECTOR')
+    curve = make_empty_curve()
     generate_walks(
         curve,
         obj,
@@ -497,6 +511,36 @@ def dev():
         partial(np.linspace, 0, np.pi * 2, endpoint=False),
         lambda n: [random.uniform(3, 5) for _ in range(n)],
     )
+    curve.data.bevel_depth = 0.01
+    curve.matrix_world = obj.matrix_world
+    set_curve_handles(curve, 'VECTOR')
+
+    obj = D.objects['Cube.Particles']
+    m = bmesh.new()
+    m.from_mesh(obj.data)
+    depsg = C.evaluated_depsgraph_get()
+    particles = obj.evaluated_get(depsg).particle_systems[0].particles
+    print(len(particles))
+    curve = make_empty_curve('Curve.Particles')
+    mat = obj.matrix_world.copy()
+    mat.invert()
+
+    # for p in particles[:10]:
+    #     v = rotated(Vector((0, 1, 0)), p.rotation)
+    #     p1 = p.location
+    #     p2 = p1 + v * 2
+    #     make_spline(curve, [mat @ p1, mat @ p2])
+    # the mat stuff is to bring the particle location into object local space
+    generate_walks(
+        curve,
+        obj,
+        m,
+        [(mat @ p.location, rotated(Vector((0, 1, 0)), p.rotation)) for p in particles],
+        partial(const, 3),
+        partial(np.linspace, 0, np.pi * 2, endpoint=False),
+        partial(uniform_n, 1, 2),
+    )
+
     curve.data.bevel_depth = 0.01
     curve.matrix_world = obj.matrix_world
     set_curve_handles(curve, 'VECTOR')
