@@ -64,7 +64,7 @@ def build_graph_vert_pairs(G, it, vertex_group=None, min_weight=0.1):
             d *= multiplier
         G.add_edge(u.index, v.index, weight=d)
 
-def build_graph(mesh, vertex_group=None, min_weight=0.1, cross_faces=True):
+def build_graph(mesh, vertex_group=None, min_weight=0.1, cross_faces=False):
     G = nx.Graph()
 
     if cross_faces:
@@ -520,7 +520,6 @@ def dev():
     m.from_mesh(obj.data)
     depsg = C.evaluated_depsgraph_get()
     particles = obj.evaluated_get(depsg).particle_systems[0].particles
-    print(len(particles))
     curve = make_empty_curve('Curve.Particles')
     mat = obj.matrix_world.copy()
     mat.invert()
@@ -545,12 +544,100 @@ def dev():
     curve.matrix_world = obj.matrix_world
     set_curve_handles(curve, 'VECTOR')
 
+class GeodesicWeightedShortestPath(bpy.types.Operator):
+    """Select shortest path between two vertices on a mesh using vertex weights"""
+
+    bl_idname = 'mesh.geodesic_select_shortest_weighted_path'
+    bl_label = 'Geodesic Select Shortest Weighted Path'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    vertex_group: bpy.props.StringProperty(name='Vertex Group', default='')
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def draw(self, context):
+        obj = context.object
+        self.layout.prop_search(self, 'vertex_group', obj, 'vertex_groups', text='Vertex Group')
+
+    def execute(self, context):
+        obj = context.object
+        if len(obj.vertex_groups) == 0:
+            self.report({'WARNING'}, 'This mesh has no vertex groups, use the builtin select shortest path')
+            return {'CANCELLED'}
+
+        if obj.data.total_vert_sel != 2:
+            self.report({'WARNING'}, f'Select only 2 vertices, got {obj.data.total_vert_sel}')
+            return {'CANCELLED'}
+
+        if self.vertex_group == '':
+            self.vertex_group = obj.vertex_groups[obj.vertex_groups.active_index].name
+
+        m = bmesh.from_edit_mesh(obj.data)
+
+        selected_verts = [x for x in m.verts if x.select]
+        assert len(selected_verts) == 2
+
+        G, verts = build_graph(m, vertex_group=obj.vertex_groups[self.vertex_group])
+        path = try_shortest_path(G, selected_verts[0].index, selected_verts[1].index)
+
+        if path is None:
+            self.report({'WARNING'}, f'No path exists between the selected vertices {selected_verts[0].index} {selected_verts[1].index}')
+            # we use FINISHED here to allow selecting another vertex group that might have a path
+            return {'FINISHED'}
+
+        m.verts.ensure_lookup_table()
+        for p in path:
+            m.verts[p].select = True
+
+        bmesh.update_edit_mesh(obj.data, False, False)
+
+        return {'FINISHED'}
+
+
+classes = [
+    GeodesicWeightedShortestPath,
+]
+
+# TODO figure out the right place for all the menu items
+# class GeodesicMenu(bpy.types.Menu):
+#     bl_label = 'Geodesic'
+#     bl_idname = 'OBJECT_MT_geodesic'
+
+#     def draw(self, context):
+#         for klass in classes:
+#             self.layout.operator(klass.bl_idname)
+
+# def menu_func(self, context):
+#     self.layout.menu(GeodesicMenu.bl_idname)
+
+def register():
+    # bpy.utils.register_class(GeodesicMenu)
+    for klass in classes:
+        bpy.utils.register_class(klass)
+    # bpy.types.VIEW3D_MT_object.append(menu_func)
+
+def unregister():
+    # bpy.utils.unregister_class(GeodesicMenu)
+    for klass in classes:
+        bpy.utils.unregister_class(klass)
+    # bpy.types.VIEW3D_MT_object.remove(menu_func)
+
 if __name__ == '__dev__':
     # I have a script in a testing blendfile with the following two lines in it to run this script
     # filename = "/path/to/origami.py"
     # exec(compile(open(filename).read(), filename, 'exec'), {'__name__': '__dev__'})
+
+    try:
+        unregister()
+    except Exception:
+        pass
+
+    register()
+
     logging.basicConfig(level=logging.DEBUG)
-    dev()
+    # dev()
     logger.debug('-' * 80)
 
 # plan for operators
