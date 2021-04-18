@@ -33,6 +33,17 @@ def rotated(v, rot):
 def uniform_n(low, hi, n):
     return [random.uniform(low, hi) for _ in range(n)]
 
+def one_mesh_one_curve(objects):
+    if len(objects) != 2:
+        return None
+    a, b = objects
+    if a.type == 'MESH' and b.type == 'CURVE':
+        return a, b
+    elif b.type == 'MESH' and a.type == 'CURVE':
+        return b, a
+    else:
+        return None
+
 def rotate_about_axis(axis, theta):
     """
     rodrigues formula
@@ -187,7 +198,7 @@ def closest_vertex_on_face(mesh, face_index, point):
     mesh.faces.ensure_lookup_table()
     return min(mesh.faces[face_index].verts, key=lambda v: (v.co - point).length_squared)
 
-def snap_curve_splines(G, mesh, obj, curve, vertex_group=None, cross_faces=False, closest_vert=True):
+def snap_curve_splines_shortest_path(G, obj, mesh, curve, vertex_group=None, cross_faces=False, closest_vert=True):
     remove = []
 
     splines = list(curve.data.splines)
@@ -404,7 +415,27 @@ def walk_along_mesh(obj, mesh, start, heading):
     return points, faces
     assert False
 
-def generate_walks(curve, obj, mesh, starts, gen_n_spokes, gen_angles, gen_lengths):
+def snap_curve_splines_walk(obj, mesh, curve):
+    remove = []
+
+    splines = list(curve.data.splines)
+    for spline in splines:
+        points = spline.bezier_points if spline.type == 'BEZIER' else spline.points
+
+        if len(points) < 2:
+            continue
+        start = points[0].co
+        end = points[-1].co
+
+        points, faces = walk_along_mesh(obj, mesh, start, end - start)
+
+        make_spline(curve, points, type=spline.type)
+        remove.append(spline)
+
+    for x in remove:
+        curve.data.splines.remove(x)
+
+def generate_walks(obj, mesh, curve, starts, gen_n_spokes, gen_angles, gen_lengths):
     mesh.faces.ensure_lookup_table()
 
     for i, start in enumerate(starts):
@@ -442,7 +473,7 @@ def dev():
     # shortest path test
     G, verts = build_graph(m, vertex_group=obj.vertex_groups['Group'], cross_faces=True)
     bc = D.objects['BezierCurve']
-    snap_curve_splines(G, m, obj, bc, closest_vert=False)
+    snap_curve_splines_shortest_path(G, obj, m, bc, closest_vert=False)
     bc.matrix_world = obj.matrix_world
 
     obj = D.objects['Plane']
@@ -503,9 +534,9 @@ def dev():
     m.from_mesh(obj.data)
     curve = make_empty_curve()
     generate_walks(
-        curve,
         obj,
         m,
+        curve,
         [f.calc_center_median() for f in m.faces],
         partial(random.randint, 3, 5),
         partial(np.linspace, 0, np.pi * 2, endpoint=False),
@@ -531,9 +562,9 @@ def dev():
     #     make_spline(curve, [mat @ p1, mat @ p2])
     # the mat stuff is to bring the particle location into object local space
     generate_walks(
-        curve,
         obj,
         m,
+        curve,
         [(mat @ p.location, rotated(Vector((0, 1, 0)), p.rotation)) for p in particles],
         partial(const, 3),
         partial(np.linspace, 0, np.pi * 2, endpoint=False),
@@ -595,9 +626,97 @@ class GeodesicWeightedShortestPath(bpy.types.Operator):
 
         return {'FINISHED'}
 
+class GeodesicSnapCurveToMeshShortestPath(bpy.types.Operator):
+    """Snap each spline's in a curve to a mesh's face by optionally weighted shortest path"""
+
+    bl_idname = 'mesh.geodesic_snap_curve_to_mesh_shortest_path'
+    bl_label = 'Geodesic Snap Curve to Mesh Shortest Path'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    vertex_group: bpy.props.StringProperty(name='Vertex Group', default='')
+    cross_faces: bpy.props.BoolProperty(
+        name='Cross Faces',
+        default=False,
+        description='Allow crossing faces in n-gons even if no edge connects the verts',
+    )
+    closest_vert: bpy.props.BoolProperty(
+        name='Closest Vert',
+        default=False,
+        description='Snap the start and end to the nearest vert',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return one_mesh_one_curve(context.selected_objects) is not None
+
+    def draw(self, context):
+        obj = context.object
+        self.layout.prop_search(self, 'vertex_group', obj, 'vertex_groups', text='Vertex Group')
+        self.layout.row().prop(self, 'cross_faces')
+        self.layout.row().prop(self, 'closest_vert')
+
+    def execute(self, context):
+        mesh_curve = one_mesh_one_curve(context.selected_objects)
+        if mesh_curve is None:
+            self.report({'ERROR'}, 'You need to select one mesh and one curve object')
+            return {'CANCELLED'}
+
+        obj, curve = mesh_curve
+        m = bmesh.new()
+        m.from_mesh(obj.data)
+
+        vertex_group = None if self.vertex_group == '' else obj.vertex_groups[self.vertex_group]
+
+        G, verts = build_graph(m, vertex_group=vertex_group, cross_faces=self.cross_faces)
+
+        snap_curve_splines_shortest_path(G, obj, m, curve, closest_vert=self.closest_vert)
+
+        curve.matrix_world = obj.matrix_world
+
+        return {'FINISHED'}
+
+
+class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
+    """Snap each spline's in a curve to a mesh's face by optionally weighted shortest path"""
+
+    bl_idname = 'mesh.geodesic_snap_curve_to_mesh_walk'
+    bl_label = 'Geodesic Snap Curve to Mesh Walk'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    handle_type: bpy.props.EnumProperty(
+        name='Handle Type',
+        items=[
+            ('VECTOR', 'Vector', 'Vector'),
+            ('AUTO', 'Auto', 'Auto'),
+        ],
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return one_mesh_one_curve(context.selected_objects) is not None
+
+    def execute(self, context):
+        mesh_curve = one_mesh_one_curve(context.selected_objects)
+        if mesh_curve is None:
+            self.report({'ERROR'}, 'You need to select one mesh and one curve object')
+            return {'CANCELLED'}
+
+        obj, curve = mesh_curve
+        m = bmesh.new()
+        m.from_mesh(obj.data)
+
+        snap_curve_splines_walk(obj, m, curve)
+        set_curve_handles(curve, self.handle_type)
+
+        curve.matrix_world = obj.matrix_world
+
+        return {'FINISHED'}
+
 
 classes = [
     GeodesicWeightedShortestPath,
+    GeodesicSnapCurveToMeshShortestPath,
+    GeodesicSnapCurveToMeshWalk,
 ]
 
 # TODO figure out the right place for all the menu items
