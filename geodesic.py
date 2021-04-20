@@ -23,6 +23,12 @@ logger = logging.getLogger('geodesic')
 TOL = 1e-4
 VERT_TOL = 1e-2
 
+AXES = {
+    'X': Vector((1, 0, 0)),
+    'Y': Vector((0, 1, 0)),
+    'Z': Vector((0, 0, 1)),
+}
+
 class RandomPairsWithReplacement:
     def __init__(self, xs):
         self.xs = xs
@@ -93,6 +99,9 @@ class RandomPairsWithoutReplacement:
 
 def const(n):
     return n
+
+def const_n(x, n):
+    return [x] * n
 
 def rotated(v, rot):
     v.rotate(rot)
@@ -719,8 +728,7 @@ class GeodesicSnapCurveToMeshShortestPath(bpy.types.Operator):
         return one_mesh_one_curve(context.selected_objects) is not None
 
     def draw(self, context):
-        obj = context.object
-        self.layout.prop_search(self, 'vertex_group', obj, 'vertex_groups', text='Vertex Group')
+        self.layout.prop_search(self, 'vertex_group', context.object, 'vertex_groups', text='Vertex Group')
         self.layout.row().prop(self, 'cross_faces')
         self.layout.row().prop(self, 'closest_vert')
 
@@ -744,9 +752,8 @@ class GeodesicSnapCurveToMeshShortestPath(bpy.types.Operator):
 
         return {'FINISHED'}
 
-
 class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
-    """Snap each spline's in a curve to a mesh's face by optionally weighted shortest path"""
+    """Snap each spline's in a curve to the surface of mesh, using the splines start and endpoint as the heading"""
 
     bl_idname = 'mesh.geodesic_snap_curve_to_mesh_walk'
     bl_label = 'Geodesic Snap Curve to Mesh Walk'
@@ -782,7 +789,7 @@ class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
         return {'FINISHED'}
 
 class GeodesicGenerateShortestPaths(bpy.types.Operator):
-    """Snap each spline's in a curve to a mesh's face by optionally weighted shortest path"""
+    """Generate shortest paths between random vertex pairs"""
 
     bl_idname = 'mesh.geodesic_generate_shortest_paths'
     bl_label = 'Geodesic Generate Shortest Paths'
@@ -804,13 +811,12 @@ class GeodesicGenerateShortestPaths(bpy.types.Operator):
         ],
     )
     bevel_depth: bpy.props.FloatProperty(name='Bevel Depth', default=0, min=0, precision=3, step=1)
-    seed: bpy.props.IntProperty(name='Seed', default=42)
+    seed: bpy.props.IntProperty(name='Seed', default=0)
     min_length: bpy.props.IntProperty(name='Min Length', default=2, description='Don\'t accept paths with fewer than this many vertices')
 
     def draw(self, context):
-        obj = context.object
         self.layout.prop(self, 'n_paths')
-        self.layout.prop_search(self, 'vertex_group', obj, 'vertex_groups', text='Vertex Group')
+        self.layout.prop_search(self, 'vertex_group', context.object, 'vertex_groups', text='Vertex Group')
         self.layout.prop(self, 'with_replacement')
         self.layout.prop(self, 'cross_faces')
         self.layout.prop(self, 'min_length')
@@ -845,11 +851,140 @@ class GeodesicGenerateShortestPaths(bpy.types.Operator):
 
         return {'FINISHED'}
 
+class GeodesicGenerateWalks(bpy.types.Operator):
+    """Generate walks on the surface of a mesh"""
+
+    bl_idname = 'mesh.geodesic_generate_walks'
+    bl_label = 'Geodesic Generate Walks'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    n_spokes: bpy.props.IntProperty(name='Number of Paths', min=1, default=1)
+    subset: bpy.props.IntProperty(name='Number of Sources to use', min=0, default=0, description='Only use this many sources (0 for all)')
+
+    source: bpy.props.EnumProperty(
+        name='Source',
+        items=[
+            ('FACE_CENTERS', 'Face Centers', 'Face Centers'),
+            ('PARTICLES', 'Particles', 'Particles'),
+        ],
+    )
+    particle_system: bpy.props.StringProperty(name='Particle System', default='')
+    particle_axis: bpy.props.EnumProperty(
+        name='Particle Axis',
+        items=[
+            ('X', 'X', 'X'),
+            ('Y', 'Y', 'Y'),
+            ('Z', 'Z', 'Z'),
+        ]
+    )
+
+    path_length_type: bpy.props.EnumProperty(
+        name='Path Length Type',
+        items=[
+            ('CONSTANT', 'Constant', 'Constant'),
+            ('RANDOM_UNIFORM', 'Uniform Random', 'Uniform Random'),
+        ]
+    )
+    path_length: bpy.props.FloatProperty(name='Length of Paths', min=0.001, default=1)
+    path_length_random_uniform_min: bpy.props.FloatProperty(name='Uniform Random Min', min=0.001, default=1)
+    path_length_random_uniform_max: bpy.props.FloatProperty(name='Uniform Random Max', min=0.001, default=1)
+
+    seed: bpy.props.IntProperty(name='Seed', default=0)
+    handle_type: bpy.props.EnumProperty(
+        name='Handle Type',
+        items=[
+            ('VECTOR', 'Vector', 'Vector'),
+            ('AUTO', 'Auto', 'Auto'),
+        ],
+    )
+    bevel_depth: bpy.props.FloatProperty(name='Bevel Depth', default=0, min=0, precision=3, step=1)
+
+    def draw(self, context):
+        self.layout.prop(self, 'source')
+        if self.source == 'PARTICLES':
+            self.layout.prop_search(self, 'particle_system', context.object, 'particle_systems', text='Particle System')
+            self.layout.prop(self, 'particle_axis', expand=True)
+
+        self.layout.prop(self, 'subset')
+        self.layout.prop(self, 'n_spokes')
+
+        self.layout.prop(self, 'path_length_type', expand=True)
+        if self.path_length_type == 'CONSTANT':
+            self.layout.prop(self, 'path_length')
+        else:
+            self.layout.prop(self, 'path_length_random_uniform_min')
+            self.layout.prop(self, 'path_length_random_uniform_max')
+
+        self.layout.prop(self, 'handle_type')
+        self.layout.prop(self, 'bevel_depth')
+        self.layout.prop(self, 'seed')
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'MESH'
+
+    def execute(self, context):
+        random.seed(self.seed)
+        obj = context.object
+
+        if self.source == 'PARTICLES':
+            if len(obj.particle_systems) == 0:
+                self.report({'ERROR'}, 'Object has no particle system')
+                self.source = 'FACE_CENTERS'
+            elif self.particle_system == '':
+                self.particle_system = obj.particle_systems[obj.particle_systems.active_index].name
+
+        m = bmesh.new()
+        m.from_mesh(obj.data)
+        curve = make_empty_curve()
+
+        if self.source == 'FACE_CENTERS':
+            source = [f.calc_center_median() for f in m.faces]
+
+        else:
+            depsg = context.evaluated_depsgraph_get()
+            particles = obj.evaluated_get(depsg).particle_systems[0].particles
+            mat = obj.matrix_world.copy()
+            mat.invert()
+            axis = AXES[self.particle_axis]
+            source = [(mat @ p.location, rotated(axis, p.rotation)) for p in particles]
+
+        if self.subset > 0:
+            random.shuffle(source)
+            source = source[:self.subset]
+
+        if self.path_length_type == 'CONSTANT':
+            lengths = partial(const_n, self.path_length)
+        else:
+            lengths = partial(uniform_n, self.path_length_random_uniform_min, self.path_length_random_uniform_max)
+
+        # TODO - n_spokes should have constand and uniform options
+        #      - angle of spokes should have equal and random with start/end options
+        #      - investigate the bouncing/rotating of initial heading
+
+        generate_walks(
+            obj=obj,
+            mesh=m,
+            curve=curve,
+            starts=source,
+            gen_n_spokes=partial(const, self.n_spokes),
+            gen_angles=partial(np.linspace, 0, np.pi * 2, endpoint=False),
+            gen_lengths=lengths,
+        )
+
+        curve.matrix_world = obj.matrix_world
+        curve.data.bevel_depth = self.bevel_depth
+
+        set_curve_handles(curve, self.handle_type)
+
+        return {'FINISHED'}
+
 classes = [
     GeodesicWeightedShortestPath,
     GeodesicSnapCurveToMeshShortestPath,
     GeodesicSnapCurveToMeshWalk,
     GeodesicGenerateShortestPaths,
+    GeodesicGenerateWalks,
 ]
 
 # TODO figure out the right place for all the menu items
