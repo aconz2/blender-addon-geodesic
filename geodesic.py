@@ -23,6 +23,74 @@ logger = logging.getLogger('geodesic')
 TOL = 1e-4
 VERT_TOL = 1e-2
 
+class RandomPairsWithReplacement:
+    def __init__(self, xs):
+        self.xs = xs
+        self.i = 0
+        random.shuffle(self.xs)
+
+    def commit(self): pass
+    def reject(self): pass
+
+    def draw(self):
+        if len(self.xs) - self.i < 2:
+            self.i = 0
+            random.shuffle(self.xs)
+
+        a = self.xs[self.i]
+        b = self.xs[self.i + 1]
+
+        self.i += 2
+
+        return a, b
+
+class RandomPairsWithoutReplacement:
+    def __init__(self, xs):
+        # idk is it better to use a single deque and a marker of when the first element comes back around?
+        self.primary = xs
+        self.secondary = []
+        self.i = 0
+
+        self.a = None
+        self.b = None
+        self.done = False
+
+        self.reload()
+
+    def reload(self):
+        self.primary.extend(self.secondary)
+        random.shuffle(self.primary)
+        self.secondary.clear()
+
+        if len(self.primary) < 2:
+            self.done = True
+
+    def draw(self):
+        if self.done:
+            return None
+
+        if len(self.primary) < 2:
+            self.reload()
+            if self.done:
+                return None
+
+        self.a = self.primary.pop()
+        self.b = self.primary.pop()
+
+        return self.a, self.b
+
+    def commit(self):
+        assert self.a is not None and self.b is not None
+        self.a = None
+        self.b = None
+
+    def reject(self):
+        assert self.a is not None and self.b is not None
+        self.secondary.append(self.a)
+        self.secondary.append(self.b)
+        self.a = None
+        self.b = None
+
 def const(n):
     return n
 
@@ -32,6 +100,9 @@ def rotated(v, rot):
 
 def uniform_n(low, hi, n):
     return [random.uniform(low, hi) for _ in range(n)]
+
+def vector_rejection(a, b):
+    return a - a.project(b)
 
 def one_mesh_one_curve(objects):
     if len(objects) != 2:
@@ -248,32 +319,33 @@ def snap_curve_splines_shortest_path(G, obj, mesh, curve, vertex_group=None, cro
     for x in remove:
         curve.data.splines.remove(x)
 
-# def make_multiple_paths(G, n):
-#     n = 5
-#     while n:
-#         if len(G) < 2:
-#             break
+# options will be added that make it hard to tell without exhaustive checks whether
+# paths that fit criteria will be found in reasonable time. maxtries_multiplier bounds our efforts
+def generate_multiple_paths(G, n, maxtries_multiplier=10, with_replacement=True, min_length=2):
+    ret = []
 
-#         # TODO could be more efficient
-#         nodes = list(G)
-#         random.shuffle(nodes)
-#         a, b = nodes[:2]
+    pairs = (RandomPairsWithReplacement if with_replacement else RandomPairsWithoutReplacement)(list(G))
+    for _ in range(n * maxtries_multiplier):
+        pair = pairs.draw()
+        if pair is None:
+            break
+        a, b = pair
+        # TODO future things might reject this path
 
-#         try:
-#             path = nx.algorithms.shortest_path(G, a, b, weight='weight')
-#             if len(path) < 10:
-#                 continue
-#             remove_path(G, path)
+        path = try_shortest_path(G, a, b)
+        # TODO if this is frequently caused by disconnected components, it would be smarter to partition
+        # the pairs up front and only try pairs with a connected component
+        if path is None or len(path) < min_length:
+            pairs.reject()
+            continue
 
-#             curve = make_curve([verts[i] for i in path], handle_type='AUTO')
-#             curve.data.bevel_depth = max(0.01, random.gauss(0.03, 0.01))
-#             n -= 1
+        ret.append(get_path_points(G, path))
+        pairs.commit()
 
-#         except nx.exception.NodeNotFound:
-#             logger.debug('NodeNotFound, vertex must have not been in the vertex group')
+        if len(ret) == n:
+            break
 
-#         except nx.exception.NetworkXNoPath:
-#             logger.debug('No such path')
+    return ret
 
 # expected to be called with only edges containing 1 or 2 faces
 def next_face(face, edge):
@@ -322,9 +394,6 @@ def closest_point_on_mesh(obj, point):
     if not succ:
         raise ValueError('failed to get closest_point_on_mesh')
     return loc, normal, face_index
-
-def vector_rejection(a, b):
-    return a - a.project(b)
 
 def walk_along_mesh(obj, mesh, start, heading):
     """
@@ -712,11 +781,75 @@ class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
 
         return {'FINISHED'}
 
+class GeodesicGenerateShortestPaths(bpy.types.Operator):
+    """Snap each spline's in a curve to a mesh's face by optionally weighted shortest path"""
+
+    bl_idname = 'mesh.geodesic_generate_shortest_paths'
+    bl_label = 'Geodesic Generate Shortest Paths'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    n_paths: bpy.props.IntProperty(name='Number of Paths', min=1, default=1)
+    with_replacement: bpy.props.BoolProperty(name='With Replacement', description='Re-use vertices if true', default=True)
+    vertex_group: bpy.props.StringProperty(name='Vertex Group', default='')
+    cross_faces: bpy.props.BoolProperty(
+        name='Cross Faces',
+        default=False,
+        description='Allow crossing faces in n-gons even if no edge connects the verts',
+    )
+    handle_type: bpy.props.EnumProperty(
+        name='Handle Type',
+        items=[
+            ('VECTOR', 'Vector', 'Vector'),
+            ('AUTO', 'Auto', 'Auto'),
+        ],
+    )
+    bevel_depth: bpy.props.FloatProperty(name='Bevel Depth', default=0, min=0, precision=3, step=1)
+    seed: bpy.props.IntProperty(name='Seed', default=42)
+    min_length: bpy.props.IntProperty(name='Min Length', default=2, description='Don\'t accept paths with fewer than this many vertices')
+
+    def draw(self, context):
+        obj = context.object
+        self.layout.prop(self, 'n_paths')
+        self.layout.prop_search(self, 'vertex_group', obj, 'vertex_groups', text='Vertex Group')
+        self.layout.prop(self, 'with_replacement')
+        self.layout.prop(self, 'cross_faces')
+        self.layout.prop(self, 'min_length')
+        self.layout.prop(self, 'handle_type')
+        self.layout.prop(self, 'bevel_depth')
+        self.layout.prop(self, 'seed')
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'MESH'
+
+    def execute(self, context):
+        random.seed(self.seed)
+
+        obj = context.object
+        m = bmesh.new()
+        m.from_mesh(obj.data)
+
+        vertex_group = None if self.vertex_group == '' else obj.vertex_groups[self.vertex_group]
+        G, verts = build_graph(m, vertex_group=vertex_group, cross_faces=self.cross_faces)
+
+        curve = make_empty_curve()
+        pointss = generate_multiple_paths(G, self.n_paths, with_replacement=self.with_replacement, min_length=self.min_length)
+        for points in pointss:
+            make_spline(curve, points, type='BEZIER', handle_type=self.handle_type)
+
+        if len(pointss) < self.n_paths:
+            self.report({'WARNING'}, f'Only generated {len(pointss)} curves')
+
+        curve.matrix_world = obj.matrix_world
+        curve.data.bevel_depth = self.bevel_depth
+
+        return {'FINISHED'}
 
 classes = [
     GeodesicWeightedShortestPath,
     GeodesicSnapCurveToMeshShortestPath,
     GeodesicSnapCurveToMeshWalk,
+    GeodesicGenerateShortestPaths,
 ]
 
 # TODO figure out the right place for all the menu items
