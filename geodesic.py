@@ -171,39 +171,9 @@ def build_graph(mesh, vertex_group=None, min_weight=0.1, cross_faces=False):
 
     return G, mesh.verts
 
-def subdivide_edge_n(e, n):
-    # subdividing once is a 0.5 split, twice is a 0.33 .33 split etc
-    split = 1 / (n + 1)
-    pointing = (e.verts[1].co - e.verts[0].co)
-    vert = e.verts[0].co
-    for i in range(1, n + 1):
-        yield vert + pointing * split * i
-
 def remove_path(G, nodes):
     for i in range(len(nodes) - 1):
         G.remove_edge(nodes[i], nodes[i + 1])
-
-# def build_graph_subdivide_n(mesh, n):
-
-#     verts = [x.co for x in mesh.verts]
-#     edges = []
-
-#     for e in mesh.edges:
-#         edges.append([i + len(verts) for i in range(n)])
-#         l = list(subdivide_edge_n(e, n))
-#         verts.extend(subdivide_edge_n(e, n))
-
-#     G, _ = build_graph(mesh)
-
-#     for f in mesh.faces:
-#         for e1, e2 in itertools.combinations(f.edges, 2):
-#             for v1, v2 in itertools.product(edges[e1.index], edges[e2.index]):
-#                 if G.has_edge(v1, v2):
-#                     continue
-#                 d = (verts[v1] - verts[v2]).length
-#                 G.add_edge(v1, v2, weight=d)
-
-#     return G, verts
 
 def make_empty_curve(name='Curve'):
     curve = bpy.data.objects.new(name, bpy.data.curves.new(name, 'CURVE'))
