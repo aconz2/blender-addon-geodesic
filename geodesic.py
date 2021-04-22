@@ -1,3 +1,11 @@
+
+bl_info = {
+    'name': 'Geodesic',
+    'description': 'Geodesic like things; weighted shortest path and walking along a mesh',
+    'blender': (2, 92, 0),
+    'category': 'Object',
+}
+
 import itertools
 import random
 from functools import partial
@@ -395,8 +403,10 @@ def walk_along_mesh(obj, mesh, start, heading):
     # of course if you have coplanar faces the dot won't tell you enough, you'd then want to check which one the heading
     # actually produces a path that doesn't end right away
 
-    if not math.isclose(heading.dot(face.normal), 0):
-        # logger.debug('reprojection heading onto face because dot is {:.2f}'.format(heading.dot(face.normal)))
+    # getting -0 issues
+    if not math.isclose(abs(heading.dot(face.normal)), 0, rel_tol=1e-3):
+    # if abs(heading.dot(face.normal)) > 1e-3:
+        logger.debug('reprojection heading onto face because dot is {:.6f} {} {}'.format(heading.dot(face.normal), heading, face.normal))
         l = heading.length
         heading = vector_rejection(heading, face.normal)
         heading.normalize()
@@ -451,7 +461,7 @@ def walk_along_mesh(obj, mesh, start, heading):
             assert len(points) - 1 == len(faces)
             return points, faces
 
-        assert (heading.length) >= (intersection - a).length
+        # assert (heading.length) >= (intersection - a).length
 
         heading -= (intersection - a)  # subtract off the amount we have
         heading = make_face_face_rotation_matrix(face, new_face, v2 - v1) @ heading
@@ -821,6 +831,15 @@ class GeodesicGenerateShortestPaths(bpy.types.Operator):
 
         return {'FINISHED'}
 
+def constant_or_random_enum(name):
+    return bpy.props.EnumProperty(
+        name=name,
+        items=[
+            ('CONSTANT', 'Constant', 'Constant'),
+            ('RANDOM_UNIFORM', 'Uniform Random', 'Uniform Random'),
+        ]
+    )
+
 class GeodesicGenerateWalks(bpy.types.Operator):
     """Generate walks on the surface of a mesh"""
 
@@ -828,7 +847,11 @@ class GeodesicGenerateWalks(bpy.types.Operator):
     bl_label = 'Geodesic Generate Walks'
     bl_options = {'REGISTER', 'UNDO'}
 
-    n_spokes: bpy.props.IntProperty(name='Number of Paths', min=1, default=1)
+    n_spokes_type: constant_or_random_enum('Number of Spokes type')
+    n_spokes: bpy.props.IntProperty(name='Number of Spokes', min=1, default=1)
+    n_spokes_random_uniform_min: bpy.props.IntProperty(name='Uniform Random Min', min=0, default=1)
+    n_spokes_random_uniform_max: bpy.props.IntProperty(name='Uniform Random Max', min=0, default=1)
+
     subset: bpy.props.IntProperty(name='Number of Sources to use', min=0, default=0, description='Only use this many sources (0 for all)')
 
     source: bpy.props.EnumProperty(
@@ -848,18 +871,19 @@ class GeodesicGenerateWalks(bpy.types.Operator):
         ]
     )
 
-    path_length_type: bpy.props.EnumProperty(
-        name='Path Length Type',
-        items=[
-            ('CONSTANT', 'Constant', 'Constant'),
-            ('RANDOM_UNIFORM', 'Uniform Random', 'Uniform Random'),
-        ]
-    )
+    path_length_type: constant_or_random_enum('Length of Paths Type')
     path_length: bpy.props.FloatProperty(name='Length of Paths', min=0.001, default=1)
     path_length_random_uniform_min: bpy.props.FloatProperty(name='Uniform Random Min', min=0.001, default=1)
     path_length_random_uniform_max: bpy.props.FloatProperty(name='Uniform Random Max', min=0.001, default=1)
 
-    seed: bpy.props.IntProperty(name='Seed', default=0)
+    spoke_angle_type: bpy.props.EnumProperty(
+        name='Spoke Angle Type',
+        items=[
+            ('EQUAL', 'Equally Spaced', 'Equally Spaced'),
+            ('RANDOM', 'Randomly Spaced', 'Randomly Spaced'),
+        ]
+    )
+
     handle_type: bpy.props.EnumProperty(
         name='Handle Type',
         items=[
@@ -869,23 +893,35 @@ class GeodesicGenerateWalks(bpy.types.Operator):
     )
     bevel_depth: bpy.props.FloatProperty(name='Bevel Depth', default=0, min=0, precision=3, step=1)
 
+    seed: bpy.props.IntProperty(name='Seed', default=0)
+
     def draw(self, context):
-        self.layout.prop(self, 'source')
+        self.layout.row(heading='Source').prop(self, 'source', expand=True)
         if self.source == 'PARTICLES':
             self.layout.prop_search(self, 'particle_system', context.object, 'particle_systems', text='Particle System')
-            self.layout.prop(self, 'particle_axis', expand=True)
+            self.layout.row(heading='Axis').prop(self, 'particle_axis', expand=True)
 
         self.layout.prop(self, 'subset')
-        self.layout.prop(self, 'n_spokes')
 
-        self.layout.prop(self, 'path_length_type', expand=True)
+        self.layout.row(heading='Num Spokes Type').prop(self, 'n_spokes_type', expand=True)
+        if self.n_spokes_type == 'CONSTANT':
+            self.layout.prop(self, 'n_spokes')
+        else:
+            row = self.layout.row()
+            row.prop(self, 'n_spokes_random_uniform_min', text='Min')
+            row.prop(self, 'n_spokes_random_uniform_max', text='Max')
+
+        self.layout.row(heading='Path Length Type').prop(self, 'path_length_type', expand=True)
         if self.path_length_type == 'CONSTANT':
             self.layout.prop(self, 'path_length')
         else:
-            self.layout.prop(self, 'path_length_random_uniform_min')
-            self.layout.prop(self, 'path_length_random_uniform_max')
+            row = self.layout.row()
+            row.prop(self, 'path_length_random_uniform_min', text='Min')
+            row.prop(self, 'path_length_random_uniform_max', text='Max')
 
-        self.layout.prop(self, 'handle_type')
+        self.layout.row(heading='Spoke Angle Type').prop(self, 'spoke_angle_type', expand=True)
+
+        self.layout.row(heading='Handle Type').prop(self, 'handle_type', expand=True)
         self.layout.prop(self, 'bevel_depth')
         self.layout.prop(self, 'seed')
 
@@ -913,32 +949,39 @@ class GeodesicGenerateWalks(bpy.types.Operator):
 
         else:
             depsg = context.evaluated_depsgraph_get()
-            particles = obj.evaluated_get(depsg).particle_systems[0].particles
+            particles = obj.evaluated_get(depsg).particle_systems[self.particle_system].particles
             mat = obj.matrix_world.copy()
             mat.invert()
-            axis = AXES[self.particle_axis]
-            source = [(mat @ p.location, rotated(axis, p.rotation)) for p in particles]
+            source = [(mat @ p.location, rotated(AXES[self.particle_axis].copy(), p.rotation)) for p in particles]
 
         if self.subset > 0:
             random.shuffle(source)
             source = source[:self.subset]
 
+        if self.n_spokes_type == 'CONSTANT':
+            spokes = partial(const, self.n_spokes)
+        else:
+            self.n_spokes_random_uniform_max = max(self.n_spokes_random_uniform_min, self.n_spokes_random_uniform_max)
+            spokes = partial(random.randint, self.n_spokes_random_uniform_min, self.n_spokes_random_uniform_max)
+
         if self.path_length_type == 'CONSTANT':
             lengths = partial(const_n, self.path_length)
         else:
+            self.path_length_random_uniform_max = max(self.path_length_random_uniform_min, self.path_length_random_uniform_max)
             lengths = partial(uniform_n, self.path_length_random_uniform_min, self.path_length_random_uniform_max)
 
-        # TODO - n_spokes should have constand and uniform options
-        #      - angle of spokes should have equal and random with start/end options
-        #      - investigate the bouncing/rotating of initial heading
+        if self.spoke_angle_type == 'EQUAL':
+            angles = partial(np.linspace, 0, np.pi * 2, endpoint=False)
+        else:
+            angles = partial(uniform_n, -np.pi, np.pi)
 
         generate_walks(
             obj=obj,
             mesh=m,
             curve=curve,
             starts=source,
-            gen_n_spokes=partial(const, self.n_spokes),
-            gen_angles=partial(np.linspace, 0, np.pi * 2, endpoint=False),
+            gen_n_spokes=spokes,
+            gen_angles=angles,
             gen_lengths=lengths,
         )
 
