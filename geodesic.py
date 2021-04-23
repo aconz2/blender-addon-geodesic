@@ -515,6 +515,17 @@ def generate_walks(obj, mesh, curve, starts, gen_n_spokes, gen_angles, gen_lengt
             points, faces = walk_along_mesh(obj, mesh, start, h)
             make_spline(curve, points)
 
+# not ideal but the graph isn't guaranteed to have real edges
+def edges_from_verts(mesh, verts):
+    mesh.verts.ensure_lookup_table()
+    for i in range(len(verts) - 1):
+        a = mesh.verts[verts[i]]
+        b = mesh.verts[verts[i + 1]]
+        for e in a.link_edges:
+            if b == e.other_vert(a):
+                yield e.index
+                break
+
 def dev():
     C = bpy.context
     D = bpy.data
@@ -640,6 +651,11 @@ class GeodesicWeightedShortestPath(bpy.types.Operator):
     bl_label = 'Geodesic Select Shortest Weighted Path'
     bl_options = {'REGISTER', 'UNDO'}
 
+    cross_faces: bpy.props.BoolProperty(
+        name='Cross Faces',
+        default=False,
+        description='Allow crossing faces in n-gons even if no edge connects the verts',
+    )
     vertex_group: bpy.props.StringProperty(name='Vertex Group', default='')
 
     @classmethod
@@ -649,6 +665,7 @@ class GeodesicWeightedShortestPath(bpy.types.Operator):
     def draw(self, context):
         obj = context.object
         self.layout.prop_search(self, 'vertex_group', obj, 'vertex_groups', text='Vertex Group')
+        self.layout.prop(self, 'cross_faces')
 
     def execute(self, context):
         obj = context.object
@@ -668,7 +685,7 @@ class GeodesicWeightedShortestPath(bpy.types.Operator):
         selected_verts = [x for x in m.verts if x.select]
         assert len(selected_verts) == 2
 
-        G, verts = build_graph(m, vertex_group=obj.vertex_groups[self.vertex_group])
+        G, verts = build_graph(m, vertex_group=obj.vertex_groups[self.vertex_group], cross_faces=self.cross_faces)
         path = try_shortest_path(G, selected_verts[0].index, selected_verts[1].index)
 
         if path is None:
@@ -679,6 +696,12 @@ class GeodesicWeightedShortestPath(bpy.types.Operator):
         m.verts.ensure_lookup_table()
         for p in path:
             m.verts[p].select = True
+
+        m.edges.ensure_lookup_table()
+        for e in edges_from_verts(m, path):
+            m.edges[e].select = True
+
+        # TODO is the same thing useful for faces?
 
         bmesh.update_edit_mesh(obj.data, False, False)
 
@@ -1001,28 +1024,28 @@ classes = [
 ]
 
 # TODO figure out the right place for all the menu items
-# class GeodesicMenu(bpy.types.Menu):
-#     bl_label = 'Geodesic'
-#     bl_idname = 'OBJECT_MT_geodesic'
+class GeodesicMenu(bpy.types.Menu):
+    bl_label = 'Geodesic'
+    bl_idname = 'OBJECT_MT_geodesic'
 
-#     def draw(self, context):
-#         for klass in classes:
-#             self.layout.operator(klass.bl_idname)
+    def draw(self, context):
+        for klass in classes:
+            self.layout.operator(klass.bl_idname)
 
-# def menu_func(self, context):
-#     self.layout.menu(GeodesicMenu.bl_idname)
+def menu_func(self, context):
+    self.layout.menu(GeodesicMenu.bl_idname)
 
 def register():
-    # bpy.utils.register_class(GeodesicMenu)
+    bpy.utils.register_class(GeodesicMenu)
     for klass in classes:
         bpy.utils.register_class(klass)
-    # bpy.types.VIEW3D_MT_object.append(menu_func)
+    bpy.types.VIEW3D_MT_object.append(menu_func)
 
 def unregister():
-    # bpy.utils.unregister_class(GeodesicMenu)
+    bpy.utils.unregister_class(GeodesicMenu)
     for klass in classes:
         bpy.utils.unregister_class(klass)
-    # bpy.types.VIEW3D_MT_object.remove(menu_func)
+    bpy.types.VIEW3D_MT_object.remove(menu_func)
 
 if __name__ == '__dev__':
     # I have a script in a testing blendfile with the following two lines in it to run this script
@@ -1040,23 +1063,7 @@ if __name__ == '__dev__':
     # dev()
     logger.debug('-' * 80)
 
-# plan for operators
-# edit mode - select shortest weighted path between two selected verts (allow selected vertex group)
-
-# shortest path
-# select mesh and curve, snap each spline's start and end to mesh and do shortest (weighted) path (allow vertex group selection)
-
-# geodesic path
-# select mesh and curve, snap each spline to mesh and then wrap/project the spline onto the mesh
-
-# generators
-# shortest path
-# select mesh, select n random vert pairs (allow only selected) and draw spline, allow using particles and/or verts of another mesh as the basis for this pool
-# options: min length (in terms of steps and/or weight), max length, no duplciate nodes, FUTURE no intersections
-
-# geodesic path
-# `generate_walks`
-# select mesh, starting points snapped from particles (can include the particles X, Y, or Z as the heading guess) or verts of another mesh or face centers b/c why not
-# options nspokes (constant, uniform, gaussian), angles (equi, random), lengths (constant, uniform, gaussian) FUTURE no intersections
+elif __name__ == '__main__':
+    register()
 
 # FUTURE detect interesections for either path discard or early stopping or some type of weaving (ie add intersection to each involved spline and shuffle their z height)
