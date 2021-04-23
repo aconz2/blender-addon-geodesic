@@ -132,6 +132,17 @@ def one_mesh_one_curve(objects):
     else:
         return None
 
+def get_bmesh(obj, use_modifiers=False, context=None):
+    if use_modifiers:
+        if context is None:
+            context = bpy.context
+        dg = context.evaluated_depsgraph_get()
+        obj = obj.evaluated_get(dg)
+
+    ret = bmesh.new()
+    ret.from_mesh(obj.data)
+    return ret
+
 def rotate_about_axis(axis, theta):
     """
     rodrigues formula
@@ -476,14 +487,18 @@ def walk_along_mesh(obj, mesh, start, heading):
 def snap_curve_splines_walk(obj, mesh, curve):
     remove = []
 
+    mat = obj.matrix_world.copy()
+    mat.invert()
+
     splines = list(curve.data.splines)
     for spline in splines:
         points = spline.bezier_points if spline.type == 'BEZIER' else spline.points
 
         if len(points) < 2:
             continue
-        start = points[0].co
-        end = points[-1].co
+        # TODO does this need to be done anywhere else?
+        start = mat @ curve.matrix_world @ points[0].co
+        end = mat @ curve.matrix_world @ points[-1].co
 
         points, faces = walk_along_mesh(obj, mesh, start, end - start)
 
@@ -710,7 +725,7 @@ class GeodesicWeightedShortestPath(bpy.types.Operator):
 class GeodesicSnapCurveToMeshShortestPath(bpy.types.Operator):
     """Snap each spline's in a curve to a mesh's face by optionally weighted shortest path"""
 
-    bl_idname = 'mesh.geodesic_snap_curve_to_mesh_shortest_path'
+    bl_idname = 'object.geodesic_snap_curve_to_mesh_shortest_path'
     bl_label = 'Geodesic Snap Curve to Mesh Shortest Path'
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -758,7 +773,7 @@ class GeodesicSnapCurveToMeshShortestPath(bpy.types.Operator):
 class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
     """Snap each spline's in a curve to the surface of mesh, using the splines start and endpoint as the heading"""
 
-    bl_idname = 'mesh.geodesic_snap_curve_to_mesh_walk'
+    bl_idname = 'object.geodesic_snap_curve_to_mesh_walk'
     bl_label = 'Geodesic Snap Curve to Mesh Walk'
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -769,6 +784,8 @@ class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
             ('AUTO', 'Auto', 'Auto'),
         ],
     )
+    # TODO other things probably need to access the modifed geometry too
+    use_modifiers: bpy.props.BoolProperty(name='Use Modifiers', default=True)
 
     @classmethod
     def poll(cls, context):
@@ -781,8 +798,7 @@ class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
             return {'CANCELLED'}
 
         obj, curve = mesh_curve
-        m = bmesh.new()
-        m.from_mesh(obj.data)
+        m = get_bmesh(obj, use_modifiers=self.use_modifiers, context=context)
 
         snap_curve_splines_walk(obj, m, curve)
         set_curve_handles(curve, self.handle_type)
@@ -794,7 +810,7 @@ class GeodesicSnapCurveToMeshWalk(bpy.types.Operator):
 class GeodesicGenerateShortestPaths(bpy.types.Operator):
     """Generate shortest paths between random vertex pairs"""
 
-    bl_idname = 'mesh.geodesic_generate_shortest_paths'
+    bl_idname = 'object.geodesic_generate_shortest_paths'
     bl_label = 'Geodesic Generate Shortest Paths'
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -866,7 +882,7 @@ def constant_or_random_enum(name):
 class GeodesicGenerateWalks(bpy.types.Operator):
     """Generate walks on the surface of a mesh"""
 
-    bl_idname = 'mesh.geodesic_generate_walks'
+    bl_idname = 'object.geodesic_generate_walks'
     bl_label = 'Geodesic Generate Walks'
     bl_options = {'REGISTER', 'UNDO'}
 
